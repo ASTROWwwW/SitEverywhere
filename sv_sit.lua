@@ -1,20 +1,15 @@
 local usedSeats = {}
 
--- Fix: cache config locally for server-side validation (proximity / model / bounds checks)
 local Config = SeatConfig
 
--- Fix: track one active reservation per player to prevent map-wide seat squatting
 local playerReservation = {}
 
--- Fix: rate-limit requestSeat per source to mitigate request spam / DoS
 local lastRequest = {}
 local REQUEST_INTERVAL = 250 -- ms minimum between requestSeat calls per source
 
--- Fix: TTL sweep so reservations are released even if a leaveSeat packet is lost
 local SEAT_TTL = 1800000 -- 30 min hard cap (refreshed on activity)
 local seatExpiry = {}
 
--- Fix: publish seat occupancy to clients via a global statebag so client guards see real occupancy
 local function publishSeats(netId)
     local seats = usedSeats[netId]
     if not seats or next(seats) == nil then
@@ -29,7 +24,6 @@ local function publishSeats(netId)
     end
 end
 
--- Fix: purge empty sub-tables and expiry/reservation bookkeeping for a freed seat
 local function clearSeat(netId, seatIndex, src)
     local seats = usedSeats[netId]
     if not seats then return end
@@ -53,7 +47,6 @@ end
 RegisterNetEvent('as_chairs:requestSeat', function(netId, seatIndex)
     local src = source
 
-    -- Fix: rate-limit per source
     local now = GetGameTimer()
     if lastRequest[src] and (now - lastRequest[src]) < REQUEST_INTERVAL then
         TriggerClientEvent('as_chairs:seatDenied', src)
@@ -61,7 +54,6 @@ RegisterNetEvent('as_chairs:requestSeat', function(netId, seatIndex)
     end
     lastRequest[src] = now
 
-    -- Fix: validate argument types and bounds (reject malformed / hostile payloads)
     if type(netId) ~= 'number' or netId <= 0 or netId ~= math.floor(netId) then
         TriggerClientEvent('as_chairs:seatDenied', src)
         return
@@ -71,14 +63,12 @@ RegisterNetEvent('as_chairs:requestSeat', function(netId, seatIndex)
         return
     end
 
-    -- Fix: resolve the entity from the netId and ensure it actually exists server-side
     local entity = NetworkGetEntityFromNetworkId(netId)
     if not entity or entity == 0 or not DoesEntityExist(entity) then
         TriggerClientEvent('as_chairs:seatDenied', src)
         return
     end
 
-    -- Fix: validate the entity model is a configured chair and the seatIndex is in range
     local model = GetEntityModel(entity)
     local cfg = Config.Chairs[model]
     if not cfg and not Config.Behaviour.AllowAllObjects then
@@ -96,7 +86,6 @@ RegisterNetEvent('as_chairs:requestSeat', function(netId, seatIndex)
         return
     end
 
-    -- Fix: server-side proximity check to stop remote seat reservation / squatting
     local ped = GetPlayerPed(src)
     if not ped or ped == 0 then
         TriggerClientEvent('as_chairs:seatDenied', src)
@@ -111,7 +100,6 @@ RegisterNetEvent('as_chairs:requestSeat', function(netId, seatIndex)
         return
     end
 
-    -- Fix: limit to a single active reservation per player (release the previous one first)
     local prev = playerReservation[src]
     if prev then
         clearSeat(prev.netId, prev.seatIndex, src)
@@ -133,7 +121,6 @@ end)
 
 RegisterNetEvent('as_chairs:leaveSeat', function(netId, seatIndex)
     local src = source
-    -- Fix: keep leaveSeat idempotent and tolerant of malformed input
     if type(netId) ~= 'number' or type(seatIndex) ~= 'number' then
         return
     end
@@ -153,7 +140,6 @@ AddEventHandler('playerDropped', function()
                 changed = true
             end
         end
-        -- Fix: purge empty sub-tables instead of leaving stale empty tables behind
         if next(seats) == nil then
             usedSeats[netId] = nil
             seatExpiry[netId] = nil
@@ -164,7 +150,6 @@ AddEventHandler('playerDropped', function()
     end
 end)
 
--- Fix: periodic sweep releases reservations whose leaveSeat packet was lost (TTL expiry / dead entity)
 CreateThread(function()
     while true do
         Wait(60000)

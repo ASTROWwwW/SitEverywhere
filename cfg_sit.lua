@@ -1,6 +1,5 @@
 SeatConfig = {}
 
--- Fix: removed unused SeatConfig.Debug (was never read anywhere)
 
 SeatConfig.Target = {
     Label = "S'asseoir",

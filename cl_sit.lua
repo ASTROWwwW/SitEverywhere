@@ -6,25 +6,20 @@ local currentSeatEntity = nil
 local currentThreadActive = false
 local currentSeatIndex = nil
 local changeCooldown = 0
--- Fix: cache the seated prop's model/config once (avoid per-frame GetEntityModel + table lookup)
 local currentSeatModel = nil
 local currentSeatCfg = nil
--- Fix: track a pending seat change so we only reposition on server confirmation (no optimistic move)
 local pendingChangeIndex = nil
 
 math.randomseed(GetGameTimer())
 
--- Fix: hoist wall-lean anim list to a file-level constant (no per-call table reallocation)
 local WALL_ANIMS = {
     { dict = "amb@world_human_leaning@male@wall@back@foot_up@idle_a",         anim = "idle_a" },
     { dict = "amb@world_human_leaning@female@wall@back@hand_up@idle_a",       anim = "idle_a" },
     { dict = "amb@world_human_leaning@female@wall@back@holding_elbow@idle_a", anim = "idle_a" }
 }
 
--- Fix: controls disabled while seated, factored out of the per-frame loop
 local SEATED_DISABLED_CONTROLS = { 21, 22, 23, 24, 25, 32, 33, 34, 35 }
 
--- Fix: read seat occupancy from the server-published global statebag so client guards
 -- actually see which seats are taken (state.as_chairs_inuse was never written anywhere).
 local function getOccupiedSeats(netId)
     if not netId then return {} end
@@ -55,7 +50,6 @@ local function getSitScenario()
 end
 
 local function getWallScenario()
-    -- Fix: use the hoisted constant instead of allocating a table on every call
     return WALL_ANIMS[math.random(1, #WALL_ANIMS)]
 end
 local function playLeanAnim(ped, data)
@@ -81,11 +75,9 @@ local function getFreeBenchSeat(entity, cfg)
         return nil, nil
     end
     local netId = NetworkGetNetworkIdFromEntity(entity)
-    -- Fix: read real occupancy from the server statebag (was reading an unwritten state key)
     local used = getOccupiedSeats(netId)
     local ped = PlayerPedId()
     local pedCoords = GetEntityCoords(ped)
-    -- Fix: cache entity coords/forward once instead of recomputing inside getSeatOffsetPosition per seat
     local entCoords = GetEntityCoords(entity)
     local forward = GetEntityForwardVector(entity)
     local rightX = -forward.y
@@ -125,7 +117,6 @@ local function stopSitting()
     currentSeatNetId = nil
     currentSeatEntity = nil
     currentSeatIndex = nil
-    -- Fix: clear cached model/cfg and any pending seat change
     currentSeatModel = nil
     currentSeatCfg = nil
     pendingChangeIndex = nil
@@ -150,7 +141,6 @@ local function startSitLoop()
                 currentSeatNetId = nil
                 currentSeatEntity = nil
                 currentSeatIndex = nil
-                -- Fix: clear cached model/cfg and any pending seat change on forced exit
                 currentSeatModel = nil
                 currentSeatCfg = nil
                 pendingChangeIndex = nil
@@ -161,20 +151,17 @@ local function startSitLoop()
                 break
             end
             if IsControlJustPressed(0, 45) then
-                -- Fix: use cached model/cfg instead of recomputing them every change
                 if currentSeatEntity and currentSeatIndex and currentSeatCfg and currentSeatCfg.Seats
                     and not pendingChangeIndex then
                     local total = #currentSeatCfg.Seats
                     if total > 1 and GetGameTimer() >= changeCooldown then
                         changeCooldown = GetGameTimer() + 600
-                        -- Fix: read real occupancy from the server statebag
                         local used = getOccupiedSeats(currentSeatNetId)
                         local nextIndex = currentSeatIndex + 1
                         if nextIndex > total then
                             nextIndex = 1
                         end
                         if not used[nextIndex] and currentSeatNetId then
-                            -- Fix: no optimistic move; request the seat and only reposition on
                             -- seatGranted, rolling back to the current seat on seatDenied.
                             pendingChangeIndex = nextIndex
                             TriggerServerEvent('as_chairs:requestSeat', currentSeatNetId, nextIndex)
@@ -183,7 +170,6 @@ local function startSitLoop()
                 end
             end
             if Config.Behaviour.DisableControls then
-                -- Fix: iterate the factored control list instead of 9 inline calls
                 for i = 1, #SEATED_DISABLED_CONTROLS do
                     DisableControlAction(0, SEATED_DISABLED_CONTROLS[i], true)
                 end
@@ -218,14 +204,12 @@ local function sitOnChair(entity, offset, seatIndex)
     currentSeatEntity = entity
     currentSeatNetId = NetworkGetNetworkIdFromEntity(entity)
     currentSeatIndex = seatIndex
-    -- Fix: cache model/cfg so the per-frame loop doesn't recompute them
     currentSeatModel = model
     currentSeatCfg = cfg
     pendingChangeIndex = nil
     startSitLoop()
 end
 
--- Fix: reposition the seated ped to a confirmed seat (used on a server-approved seat change)
 local function moveToSeat(seatIndex)
     if not currentSeatEntity or not currentSeatCfg or not currentSeatCfg.Seats then
         return
@@ -300,7 +284,6 @@ local function startWallLean()
     ClearPedTasksImmediately(ped)
     SetEntityCoords(ped, finalPos.x, finalPos.y, finalPos.z, false, false, false, false)
     SetEntityHeading(ped, heading)
-    -- Fix: call getWallScenario once and play the exact anim that was selected
     local lean = getWallScenario()
     if not lean then
         return
@@ -318,7 +301,6 @@ RegisterNetEvent('as_chairs:seatGranted', function(netId, seatIndex)
     if type(netId) ~= 'number' then
         return
     end
-    -- Fix: confirmed seat change while already seated -> reposition only now (no optimistic move)
     if isSitting then
         if pendingChangeIndex and currentSeatNetId == netId and seatIndex == pendingChangeIndex then
             moveToSeat(seatIndex)
@@ -347,7 +329,6 @@ RegisterNetEvent('as_chairs:seatGranted', function(netId, seatIndex)
 end)
 
 RegisterNetEvent('as_chairs:seatDenied', function()
-    -- Fix: a denied seat change rolls back cleanly because we never moved optimistically;
     -- just drop the pending change so the player stays on the current seat.
     pendingChangeIndex = nil
 end)
@@ -426,7 +407,6 @@ CreateThread(function()
     }
     exports.ox_target:addGlobalObject(options)
 end)
--- Fix: removed the permanent Wait(0) thread that raycast every frame for all players;
 -- its only effect was a no-op DisableControlAction(..., false). Wall-lean is handled by the
 -- 'walllean' keymapping below, which raycasts only when the key is pressed.
 
